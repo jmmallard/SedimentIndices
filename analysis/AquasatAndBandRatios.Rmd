@@ -1,0 +1,153 @@
+---
+title: "AquasatAndBandRatios"
+author: "Mallard"
+date: "11/2/2022"
+output: html_document
+---
+
+Using aquasat data to assess the utility of various band ratios as relative metrics of sediment concentrations
+
+Load libraries
+```{r, echo=FALSE, message=FALSE}
+#Libraries
+library(tidyverse)
+library(gridExtra)
+library(maps)
+library(ggthemes)
+library(ggpubr)
+library(pals)
+library(hexbin)
+library(broom)
+library(bit64)
+```
+
+Read in data from "AquaSat" on figshare (https://figshare.com/collections/AquaSat/4506140/2) 
+  and data from MR with only tss (tss_only.csv, no ssc)
+  and data from JG shared via Google drive (https://drive.google.com/drive/folders/1egw_P7bJVTKZx8j_RyS_xtDwCYgdbGVN)
+
+```{r data, echo=FALSE, message=FALSE}
+aquasat_raw <- data.table::fread("data/aquasat/sr_wq_rs_join.csv") %>% 
+  as_tibble()
+aquasat_JG <- data.table::fread("data/aquasat/aquasat_tss_full_train.csv") %>% 
+  as_tibble() %>% 
+  rename(tss = value) #Rename "value" to "tss" so this dataset plugs into analysis done below for main aquasat
+aquasat_tss_only <- data.table::fread("data/aquasat/tss_only.csv") %>% 
+  as_tibble()
+aquasat_JG_huge <- feather::read_feather("data/aquasat/parametersMunged_corrected_v4.feather") %>% 
+  as_tibble() %>% 
+  rename(tss = value)
+```
+
+Filter data:
+- tss != NA & <= 5000
+- relevant bands >= 0, <= some threshold
+- pixelCount >= 9
+- only "Stream" samples
+
+
+Add indices:
+- NDSSI:
+- NSMI: 
+- BR: 
+
+```{r,  echo=FALSE, message=FALSE}
+lowRef = 0 #Thresholds for reflectance from each band
+hiRef = 5000
+
+aquasat <- aquasat_raw %>% #Can change input bn aquasat_raw, aquasat_JG, aquasat_tss_only
+  filter(
+    !is.na(tss) & 
+      blue >= lowRef & blue <= hiRef &
+      nir >= lowRef & nir <= hiRef &
+      red >= lowRef & red <= hiRef &
+      green >= lowRef & green <= hiRef &
+      tss <= 5000 &
+      pixelCount >= 9 &
+      type %in% c("Stream")) %>%
+  mutate(., 
+         NDSSI = (nir-blue)/(nir+blue), #Note that this is reversed from normal to make high NDSSI = high sediment
+         NSMI = (red+green-blue)/(red+green+blue),
+         BR = (green/blue)
+  )
+```
+
+Look at top few sites in terms of # of samples, for all 3 indices
+```{r,  echo=FALSE, message=FALSE}
+countSites <- aquasat %>% 
+  count(SiteID)
+countSites <- countSites[order(-countSites$n),]
+
+#All
+# for(i in 1:5){
+#   tempFig1 <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = NDSSI)) + geom_point()
+#   tempFig2 <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = NSMI)) + geom_point()
+#   tempFig3 <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = BR)) + geom_point()
+#   tempFig <- grid.arrange(tempFig1, tempFig2, tempFig3, nrow = 1)
+# }
+
+#NDSSI
+for(i in 1:5){
+  tempFig <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = NDSSI)) + geom_point()
+  print(tempFig)
+}
+
+# #NSMI
+# for(i in 1:5){
+#   tempFig <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = NSMI)) + geom_point()
+#   print(tempFig)
+# }
+# 
+# #BR
+# for(i in 1:5){
+#   tempFig <- ggplot(aquasat[aquasat$SiteID == countSites$SiteID[i],], aes(y = tss, x = BR)) + geom_point()
+#   print(tempFig)
+# }
+
+```
+
+Regression analysis of individual sites: spearman's rho and kendall's tau
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#Calculate spearman or kendall tau for all unique sites with n > some threshold
+threshN <- 50
+pVals <- countSites %>%
+  add_column(p = numeric(nrow(countSites))) %>%
+  add_column(m = numeric(nrow(countSites))) %>%
+  filter(n >= threshN)
+
+for(i in 1:nrow(pVals)){
+  tempData <- aquasat %>%
+    filter(SiteID == pVals$SiteID[i])
+  tempFit <- cor.test(tempData$tss, tempData$NSMI, method = "spearman")
+  pVals$p[i] <- tempFit$p.value
+  pVals$m[i] <- tempFit$estimate[[1]]
+}
+
+nSites <- nrow(pVals)
+propSites <- sum(pVals$p < 0.05 & pVals$m > 0)/nrow(pVals)
+nSites
+propSites
+```
+
+
+Plot some scatters/densities of overall data
+
+```{r echo=FALSE, message=FALSE}
+# ggplot(aquasat[aquasat$type == "Lake",], aes(y = tss, x = NDSSI)) + geom_point()
+# ggplot(aquasat[aquasat$type == "Stream",], aes(y = tss, x = NDSSI)) + geom_point()
+# ggplot(aquasat[aquasat$type == "Estuary",], aes(y = tss, x = NDSSI)) + geom_point()
+ggplot(aquasat, aes(y = tss, x = NDSSI)) + geom_point() + stat_smooth(method = "lm", col = "red")
+ggplot(aquasat, aes(y = tss, x = NSMI)) + geom_point() + stat_smooth(method = "lm", col = "red")
+ggplot(aquasat, aes(y = tss, x = BR)) + geom_point() + scale_x_log10()
+# ggplot(aquasat, aes(y = tss, x = red)) + geom_point()
+# ggplot(aquasat, aes(y = tss, x = green)) + geom_point()
+# ggplot(aquasat, aes(y = tss, x = blue)) + geom_point()
+# ggplot(aquasat, aes(y = tss, x = nir)) + geom_point()
+
+ggplot(aquasat, aes(y = tss, x = NDSSI)) + geom_hex(bins = 100) + scale_y_log10()
+ggplot(aquasat, aes(y = tss, x = NSMI)) + geom_hex(bins = 100) + scale_y_log10()
+
+
+```
+
